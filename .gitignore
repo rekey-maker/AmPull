@@ -1,0 +1,16 @@
+# 运行数据（本机）
+downloads.jsonl
+mirrors.jsonl
+
+# Python
+__pycache__/
+*.pyc
+
+# 下载产物与断点
+*.part
+*.part.done
+*.part.lock
+*.part.done.lock
+
+# 历史归档（设计文档/旧版备份/测试报告，不入公开仓库）
+AMPull-backup/

@@ -58,15 +58,15 @@ python "<ampull.py 所在目录>/ampull.py" --schema
 
 ## 代理自动检测（v5.19 重做——agent 无需手动配代理）
 
-- **多源候选依次尝试**：扫描口（本机端口**双跳探针**：CONNECT baidu 快筛 + CONNECT google 验证翻墙能力——"国内通墙外死"的口永不入选）> 环境变量 > 系统代理注册表 > 直连
+- **多源候选依次尝试**：扫描口（本机端口**双跳探针**：CONNECT baidu 快筛 + CONNECT google 验证境外连通性——"仅境内可达"的口永不入选）> 环境变量 > 系统代理注册表 > 直连
 - **当日标记**：扫描成功记 `scan_ok_date`（`ampull.state.json`，与脚本同目录），当日全部调用**零重扫**直接复用；失败当日退避；次日自动重扫（监听端口可能变）
-- **对 agent 的含义**：github/huggingface/raw.githubusercontent 等墙外下载**直接下发即可**，代理由 AmPull 自动发现并当日复用，不要手动预判"没代理下不了"；发现失败时 stderr 有诚实归因（如"今日扫描未发现翻墙代理口"）
-- 检测到 SOCKS 口/国内 HTTP 口会打 stderr 提示（SOCKS 不转发——请让用户在梯子客户端开 HTTP/混合口）；`--proxy` 显式指定恒优先；`--no-proxy` 强制直连
+- **对 agent 的含义**：github/huggingface/raw.githubusercontent 等境外下载**直接下发即可**，代理由 AmPull 自动发现并当日复用，不要手动预判"没代理下不了"；发现失败时 stderr 有诚实归因（如"今日扫描未发现境外代理口"）
+- 检测到 SOCKS 口/国内 HTTP 口会打 stderr 提示（SOCKS 不转发——请让用户在代理客户端开 HTTP/混合口）；`--proxy` 显式指定恒优先；`--no-proxy` 强制直连
 
 ## 关键行为（不要重复造轮子）
 
 - **断点续传自动**：中断后重跑原命令自动接上，无需参数；不要自己删 .part/.part.done
-- **代理自动检测（v5.19 分类扫描）**：环境变量/系统代理/扫描口多源候选自动生效（详见上方"代理自动检测"节）。国内直连 huggingface.co、raw.githubusercontent 等被墙源不要先判"下不了"，直接调它试
+- **代理自动检测（v5.19 分类扫描）**：环境变量/系统代理/扫描口多源候选自动生效（详见上方"代理自动检测"节）。国内直连 huggingface.co、raw.githubusercontent 等境内直连不可达源不要先判"下不了"，直接调它试
 - **双开保护**：同名文件已在别处下载中会报锁冲突并附处置建议，不要强删锁文件（锁机制依赖 Windows msvcrt；POSIX 下仅标记文件保护，超 10 分钟的长下载可能被 --clean 误判为残片）
 - **loopback 直连**：127.0.0.1/localhost 自动绕过代理，本地桩测试可直接用
 - **重试内建**：网络抖动/5xx/429 退避重试已内建；agent 侧失败不要立刻原样重跑，先读 error_msg

@@ -7,11 +7,14 @@ description: 调用本机 AmPull 多连接下载器执行文件下载。Use when
 
 本机已有 AmPull（单文件零依赖多连接下载器：分块并发 + 断点续传 + 镜像池 + 代理自动检测），agent 直接以 CLI 调用。用户表达下载意图时本技能生效，**不要再用 curl/浏览器下载器替代**。
 
+**大小豁免（2026-10-17 用户裁定："超过 5-10M 的都走 ampull"，取保守下界）**：预计超过 5 MB 的下载一律走 AmPull；只有明确小于 ~5 MB 的小文件才允许 `curl -x <代理>` 直取。大小未知时按较大处理（先探测 Content-Length 或直接走 AmPull）。API 查询、校验用 JSON 这类"非下载产物"的请求不受此限，仍用 curl。
+
 ## 工具位置
 
 - 主用：**与本文件（SKILL.md）同目录的 `ampull.py`**——用本文件被加载时的实际目录拼出脚本绝对路径。不要凭记忆硬编码历史路径：目录可能整体迁移过（此前就发生过从旧目录迁走、agent 按老路径调用报 can't open file）
 - 备用（哈希一致的同步副本）：`D:\test\dl\ampull.py`。主用不存在时按此顺序试；都找不到就全盘文件搜索 `ampull.py`（文件名唯一，命中即用）
 - 运行：`python <脚本路径> ...`（零第三方依赖）
+- **技能目录部署形态**：SKILL.md 与 `ampull.py` 成对放进任意 agent 技能目录（如 `~/.zcode/skills/ampull/`、`~/workbuddy 技能位`）即可被 `/ampull` 或下载意图自动触发——源目录 `Desktop/AmPull/` 是唯一事实源，改代码后跑 `python sync_skill.py` 同步全部部署位
 
 ## 动手前先读契约（红线）
 
@@ -53,10 +56,17 @@ python "<ampull.py 所在目录>/ampull.py" --schema
 | `--manifest 文件` | 批量下载清单 |
 | `--clean 目录` | 清理断点/残留（收尾用） |
 
+## 代理自动检测（v5.19 重做——agent 无需手动配代理）
+
+- **多源候选依次尝试**：扫描口（本机端口**双跳探针**：CONNECT baidu 快筛 + CONNECT google 验证翻墙能力——"国内通墙外死"的口永不入选）> 环境变量 > 系统代理注册表 > 直连
+- **当日标记**：扫描成功记 `scan_ok_date`（`ampull.state.json`，与脚本同目录），当日全部调用**零重扫**直接复用；失败当日退避；次日自动重扫（监听端口可能变）
+- **对 agent 的含义**：github/huggingface/raw.githubusercontent 等墙外下载**直接下发即可**，代理由 AmPull 自动发现并当日复用，不要手动预判"没代理下不了"；发现失败时 stderr 有诚实归因（如"今日扫描未发现翻墙代理口"）
+- 检测到 SOCKS 口/国内 HTTP 口会打 stderr 提示（SOCKS 不转发——请让用户在梯子客户端开 HTTP/混合口）；`--proxy` 显式指定恒优先；`--no-proxy` 强制直连
+
 ## 关键行为（不要重复造轮子）
 
 - **断点续传自动**：中断后重跑原命令自动接上，无需参数；不要自己删 .part/.part.done
-- **代理自动检测**：环境变量/系统代理自动生效。国内直连 huggingface.co、raw.githubusercontent 等被墙源不要先判"下不了"，直接调它试
+- **代理自动检测（v5.19 分类扫描）**：环境变量/系统代理/扫描口多源候选自动生效（详见上方"代理自动检测"节）。国内直连 huggingface.co、raw.githubusercontent 等被墙源不要先判"下不了"，直接调它试
 - **双开保护**：同名文件已在别处下载中会报锁冲突并附处置建议，不要强删锁文件（锁机制依赖 Windows msvcrt；POSIX 下仅标记文件保护，超 10 分钟的长下载可能被 --clean 误判为残片）
 - **loopback 直连**：127.0.0.1/localhost 自动绕过代理，本地桩测试可直接用
 - **重试内建**：网络抖动/5xx/429 退避重试已内建；agent 侧失败不要立刻原样重跑，先读 error_msg

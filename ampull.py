@@ -194,7 +194,7 @@ _rx_bytes = 0
 # 版本线=交付轮次（v4.7 起 UA 与设计文档版本号同线，schema 的 version 字段
 # 反射此处，勿单独改——历史上 UA 走 2.x、文档走 v4.x 两套叙事，agent 缓存的
 # 契约会跨版本对不上）
-UA = "ampull/5.18"   # v5.18：GitHub 归档 404 自动分支回退（API 默认分支+常见名+codeload）+ 死链快败
+UA = "ampull/5.19"   # v5.19：代理检测重做（分类扫描+当日标记+翻墙验证，awsearch r37++ 回移植）
 # error 词表（单一事实来源，--schema 输出它）。闭合=JSON 的 error 字段不会出现
 # 词表外的值（http_XXX 除外，XXX 是任意 HTTP 状态码）。cancelled=批量模式下其他
 # 分片已失败时被提前放弃的分片错误码——手写清单曾漏过它（docstring 漂移实测），
@@ -622,65 +622,198 @@ def _registry_proxies():
     return _parse_proxy_server(srv)
 
 
-def _listen_ports():
-    """本机正在监听的端口（netstat 解析，零依赖的通用做法）。只看回环/全接口
-    的 LISTENING，且 >=1024（代理不会占低位）。**不截断**——真代理的端口没有
-    规律，截断就是赌运气；耗时由并行探针兜住。"""
+def _listen_addrs():
+    """本机 LISTENING (host, port) 列表（netstat 解析，零依赖的通用做法）。
+    r38（对齐 awsearch r37++）：放宽到 **局域网 IPv4 绑定**（部分客户端只
+    bind 具体内网 IP，旧回环正则会漏）与 **127/8 全段**（仿真测试实锤
+    127.0.0.2 可绑定）；0.0.0.0/[::] 全接口归一为 127.0.0.1；[::1] 补上；
+    >=1024（代理不会占低位）；不截断——真代理端口无规律，耗时由并行探针
+    兜住。"""
     try:
         out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
                              text=True, errors="replace", timeout=10).stdout
     except Exception:
         return []
-    ports = []
-    for m in re.finditer(r"^\s*TCP\s+(?:127\.0\.0\.1|0\.0\.0\.0|\[::\]):(\d+)\s+\S+\s+LISTENING",
+    addrs = []
+    seen = set()
+    for m in re.finditer(r"^\s*TCP\s+(\S+):(\d+)\s+\S+\s+LISTENING",
                          out, re.M):
-        p = int(m.group(1))
-        if p >= 1024 and p not in ports:
-            ports.append(p)
-    return ports
+        host, p = m.group(1), int(m.group(2))
+        if p < 1024:
+            continue
+        if host in ("0.0.0.0", "[::]", "::"):
+            key = ("127.0.0.1", p)
+        elif host == "[::1]":
+            key = ("::1", p)
+        elif host == "::1" or host.startswith("127."):
+            key = (host, p)
+        elif re.match(r"^(?:192\.168\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.)", host):
+            key = (host, p)
+        else:
+            continue
+        if key not in seen:
+            seen.add(key)
+            addrs.append(key)
+    return addrs
 
 
-def _probe_proxy(purl):
+def _probe_proxy(purl, timeout=4.0, target="www.baidu.com:443"):
     """是不是一个能用的转发代理：经它对 https 目标发起 **CONNECT 隧道**，200 才算。
     必须测 CONNECT 而非明文 http 转发——实测本机有些服务（IDE 网关，8731/8732）
     肯转发明文 http 但 CONNECT 回 501，而我们的下载目标全是 https。SOCKS 口也会
-    在这里握手失败被自然排除。"""
+    在这里握手失败被自然排除。r38：改为 socket 直发 CONNECT（更轻，不再真 GET
+    favicon）；target 可换墙外域做翻墙能力验证；回环 RTT 毫秒级，timeout 1.5s
+    足够判定。**CONNECT 目标必须 host:port 形态**——带路径（如 /favicon.ico）
+    会被梯子拒绝、真代理口被误分类为 socks（首跑实锤）。"""
     try:
-        req = urllib.request.Request("https://www.baidu.com/favicon.ico",
-                                     headers={"User-Agent": UA})
-        with _make_opener(purl).open(req, timeout=4) as r:
-            return r.status == 200
+        parts = urllib.parse.urlsplit(
+            purl if "://" in purl else "http://" + purl)
+        host = parts.hostname or ""
+        port = parts.port or 80
+        if not host:
+            return False
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.sendall(("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n"
+                       % (target, target)).encode("ascii"))
+            buf = b""
+            while b"\r\n\r\n" not in buf and len(buf) < 8192:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            head = buf.split(b"\r\n", 1)[0].decode("latin-1", "replace")
+            return head.split(" ")[1:2] == ["200"]
     except Exception:
         return False
 
 
+def _probe_socks(purl, timeout=1.5):
+    """疑似 SOCKS5 无认证口：握手 05 01 00 -> 05 00 即认定。**只做发现
+    提示，不做转发**——urllib 不支持 socks，零依赖红线不引 PySocks；
+    提示用户让客户端开 HTTP/混合口（v2rayN 默认同时开、Clash 用 mixed）。"""
+    try:
+        parts = urllib.parse.urlsplit(
+            purl if "://" in purl else "http://" + purl)
+        host = parts.hostname or ""
+        port = parts.port or 80
+        if not host:
+            return False
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.sendall(b"\x05\x01\x00")
+            r = s.recv(2)
+            return len(r) == 2 and r[0] == 5 and r[1] == 0
+    except Exception:
+        return False
+
+
+def _classify_port(purl, timeout=1.5):
+    """单口分类（r38）：vpn=翻墙 HTTP 代理（baidu+google 双 CONNECT 过，
+    入扫描候选）；http=国内 HTTP 口（baidu 过 google 拒——如宿主注入
+    网关，不入选仅提示）；socks=SOCKS5 无认证口（提示用户开 HTTP/混合
+    口）；other=死口/非代理服务。"""
+    if _probe_proxy(purl, timeout=timeout):
+        if _probe_proxy(purl, timeout=timeout,
+                        target="www.google.com:443"):
+            return "vpn"
+        return "http"
+    if _probe_socks(purl, timeout=timeout):
+        return "socks"
+    return "other"
+
+
+def _state_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "ampull.state.json")
+
+
+def _state_load():
+    try:
+        with open(_state_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _state_save(d):
+    p = _state_path()
+    tmp = p + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
 def _detect_proxies():
-    """注册表 + 本机监听端口 → **并行**探针。结果缓存，一次进程只探一轮（批量 62 片
-    不会扫 62 次）。本机监听口可能一大把（微信/QQ音乐/IDE 各占几个），串行 3s 一个
-    既拖启动又大概率探不到真代理——并行后总耗时约等于单次探针（3~4 秒）。"""
+    """注册表 + 本机监听端口 → **并行分类探针**（r38，对齐 awsearch r37++）。
+    当日语义标记（ampull.state.json）：成功记 scan_ok_date 当日复用零重扫，
+    失败记 scan_fail_date 当日退避，次日重扫（监听端口可能变）。分类：
+    vpn 口（baidu+google 双 CONNECT 过）入候选——"国内通墙外死"的口
+    （IDE/宿主注入网关）永不入选；socks 口/国内口落提示。进程内缓存一次
+    进程只扫一轮（批量 62 片不会扫 62 次）。"""
     global _PROXY_CACHE
     if _PROXY_CACHE is not None:
         return _PROXY_CACHE
-    cands = _registry_proxies()
+    today = time.strftime("%Y-%m-%d")
+    st = _state_load()
+    if st.get("scan_ok_date") == today:
+        _PROXY_CACHE = [_scan_pick(st)]
+        if _PROXY_CACHE[0]:
+            return _PROXY_CACHE
+        _PROXY_CACHE = None  # 标记在但值为空：当失败处理，走重扫
+    if st.get("scan_fail_date") == today:
+        _PROXY_CACHE = []
+        print("  今日扫描未发现翻墙代理口（已当日退避）——直连模式")
+        return _PROXY_CACHE
+    cands = ["http://%s" % a for a in _registry_proxies()]
     src = "系统代理注册表" if cands else ""
-    for p in _listen_ports():
-        p = "127.0.0.1:%d" % p
-        if p not in cands:
-            cands.append(p)
+    for h, p in _listen_addrs():
+        a = "http://%s:%d" % (h, p)
+        if a not in cands:
+            cands.append(a)
     if not src:
         src = "本机端口扫描"
     found = []
+    socks_hint = []
+    http_hint = []
     if cands:
         purls = [c if "://" in c else "http://%s" % c for c in cands]
-        with cf.ThreadPoolExecutor(min(16, len(purls))) as ex:
-            for purl, hit in zip(purls, ex.map(_probe_proxy, purls)):
-                if hit:
+        with cf.ThreadPoolExecutor(min(32, len(purls))) as ex:
+            for purl, kind in zip(purls, ex.map(_classify_port, purls)):
+                if kind == "vpn":
                     found.append(purl)
+                elif kind == "http":
+                    http_hint.append(purl)
+                elif kind == "socks":
+                    socks_hint.append(purl)
     _PROXY_CACHE = found[:3]          # 最多记 3 个：主 + 备用足够，列表太长没意义
+    st = _state_load()
+    st["scan_ok_date" if found else "scan_fail_date"] = today
+    st["scan_proxy"] = found[0] if found else None
+    if socks_hint:
+        st["socks_hint"] = ", ".join(socks_hint[:3])
+    if http_hint:
+        st["http_hint"] = ", ".join(http_hint[:3])
+    _state_save(st)
     if found:
-        print("  检测到本机代理 %s（%s）——按域名自动分流；--no-proxy 可强制直连"
-              % (", ".join(found), src))
-    return found
+        print("  检测到本机翻墙代理 %s（%s，当日复用）——github/hf 走代理优先；"
+              "--no-proxy 可强制直连" % (", ".join(found), src))
+    if socks_hint:
+        print("  检测到 SOCKS 口 [%s]——AmPull 需要 HTTP/混合口，"
+              "请在客户端中开启 HTTP 端口" % "; ".join(socks_hint))
+    elif http_hint:
+        print("  检测到国内 HTTP 口 [%s]（无翻墙能力，仅提示）"
+              % "; ".join(http_hint))
+    if not found and not socks_hint and not http_hint:
+        print("  未检测到可用代理口——github/hf 将直连尝试")
+    return _PROXY_CACHE
+
+
+def _scan_pick(st):
+    """当日标记值规整：scan_proxy 为空视作无（走重扫）。"""
+    p = (st.get("scan_proxy") or "").strip()
+    return p if p else None
 
 
 def _resolve_ops(a, host=None):
@@ -708,7 +841,13 @@ def _resolve_ops(a, host=None):
             print("  %s 本机回环：钉死直连（代理无法访问本机回环，不设备用）" % host)
         return _NOENV_OPENER, None
     if _env_proxy_active():
-        return None, None                      # 环境变量已表达意图，原生行为最不惊讶
+        # r38（awsearch r37 裁决回移植）：agent 宿主可能注入受限网关 env
+        # （实测 WorkBuddy 子进程 127.0.0.1:54154——国内可达、墙外失败），
+        # 原生行为失败后切扫描口（当日标记复用）备用，而非裸直连
+        cands = _detect_proxies()
+        if cands:
+            return None, _make_opener(cands[0])
+        return None, None
     cands = _detect_proxies()
     if not cands:
         return None, None

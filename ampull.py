@@ -194,7 +194,7 @@ _rx_bytes = 0
 # 版本线=交付轮次（v4.7 起 UA 与设计文档版本号同线，schema 的 version 字段
 # 反射此处，勿单独改——历史上 UA 走 2.x、文档走 v4.x 两套叙事，agent 缓存的
 # 契约会跨版本对不上）
-UA = "ampull/5.19"   # v5.19：代理检测重做（分类扫描+当日标记+翻墙验证，awsearch r37++ 回移植）
+UA = "ampull/5.19"   # v5.19：代理检测重做（分类扫描+当日标记+境外连通验证，awsearch r37++ 回移植）
 # error 词表（单一事实来源，--schema 输出它）。闭合=JSON 的 error 字段不会出现
 # 词表外的值（http_XXX 除外，XXX 是任意 HTTP 状态码）。cancelled=批量模式下其他
 # 分片已失败时被提前放弃的分片错误码——手写清单曾漏过它（docstring 漂移实测），
@@ -662,7 +662,7 @@ def _probe_proxy(purl, timeout=4.0, target="www.baidu.com:443"):
     必须测 CONNECT 而非明文 http 转发——实测本机有些服务（IDE 网关，8731/8732）
     肯转发明文 http 但 CONNECT 回 501，而我们的下载目标全是 https。SOCKS 口也会
     在这里握手失败被自然排除。r38：改为 socket 直发 CONNECT（更轻，不再真 GET
-    favicon）；target 可换墙外域做翻墙能力验证；回环 RTT 毫秒级，timeout 1.5s
+    favicon）；target 可换境外域做境外连通性验证；回环 RTT 毫秒级，timeout 1.5s
     足够判定。**CONNECT 目标必须 host:port 形态**——带路径（如 /favicon.ico）
     会被代理拒绝、真代理口被误分类为 socks（首跑实锤）。"""
     try:
@@ -707,7 +707,7 @@ def _probe_socks(purl, timeout=1.5):
 
 
 def _classify_port(purl, timeout=1.5):
-    """单口分类（r38）：vpn=翻墙 HTTP 代理（baidu+google 双 CONNECT 过，
+    """单口分类（r38）：vpn=境外连通 HTTP 代理（baidu+google 双 CONNECT 过，
     入扫描候选）；http=国内 HTTP 口（baidu 过 google 拒——如宿主注入
     网关，不入选仅提示）；socks=SOCKS5 无认证口（提示用户开 HTTP/混合
     口）；other=死口/非代理服务。"""
@@ -749,7 +749,7 @@ def _detect_proxies():
     """注册表 + 本机监听端口 → **并行分类探针**（r38，对齐 awsearch r37++）。
     当日语义标记（ampull.state.json）：成功记 scan_ok_date 当日复用零重扫，
     失败记 scan_fail_date 当日退避，次日重扫（监听端口可能变）。分类：
-    vpn 口（baidu+google 双 CONNECT 过）入候选——"国内通墙外死"的口
+    vpn 口（baidu+google 双 CONNECT 过）入候选——"仅境内可达"的口
     （IDE/宿主注入网关）永不入选；socks 口/国内口落提示。进程内缓存一次
     进程只扫一轮（批量 62 片不会扫 62 次）。"""
     global _PROXY_CACHE
@@ -764,7 +764,7 @@ def _detect_proxies():
         _PROXY_CACHE = None  # 标记在但值为空：当失败处理，走重扫
     if st.get("scan_fail_date") == today:
         _PROXY_CACHE = []
-        print("  今日扫描未发现翻墙代理口（已当日退避）——直连模式")
+        print("  今日扫描未发现境外代理口（已当日退避）——直连模式")
         return _PROXY_CACHE
     cands = ["http://%s" % a for a in _registry_proxies()]
     src = "系统代理注册表" if cands else ""
@@ -797,13 +797,13 @@ def _detect_proxies():
         st["http_hint"] = ", ".join(http_hint[:3])
     _state_save(st)
     if found:
-        print("  检测到本机翻墙代理 %s（%s，当日复用）——github/hf 走代理优先；"
+        print("  检测到本机境外代理 %s（%s，当日复用）——github/hf 走代理优先；"
               "--no-proxy 可强制直连" % (", ".join(found), src))
     if socks_hint:
         print("  检测到 SOCKS 口 [%s]——AmPull 需要 HTTP/混合口，"
               "请在客户端中开启 HTTP 端口" % "; ".join(socks_hint))
     elif http_hint:
-        print("  检测到国内 HTTP 口 [%s]（无翻墙能力，仅提示）"
+        print("  检测到国内 HTTP 口 [%s]（无境外连通性，仅提示）"
               % "; ".join(http_hint))
     if not found and not socks_hint and not http_hint:
         print("  未检测到可用代理口——github/hf 将直连尝试")
@@ -842,7 +842,7 @@ def _resolve_ops(a, host=None):
         return _NOENV_OPENER, None
     if _env_proxy_active():
         # r38（awsearch r37 裁决回移植）：agent 宿主可能注入受限网关 env
-        # （实测 WorkBuddy 子进程 127.0.0.1:54154——国内可达、墙外失败），
+        # （实测 WorkBuddy 子进程 127.0.0.1:54154——国内可达、境外失败），
         # 原生行为失败后切扫描口（当日标记复用）备用，而非裸直连
         cands = _detect_proxies()
         if cands:
@@ -4198,7 +4198,7 @@ def main():
     ap.add_argument("--proxy", metavar="URL",
                     help="强制走指定 HTTP 代理（如 http://127.0.0.1:7890）；"
                          "默认自动检测（r38 多源候选依次尝试：扫描口[双跳探针"
-                         "验证翻墙能力，当日复用零重扫]> 环境变量 > 系统代理"
+                         "验证境外连通性，当日复用零重扫]> 环境变量 > 系统代理"
                          "注册表 > 直连）")
     ap.add_argument("--reset-proxy", action="store_true",
                     help="清除代理扫描当日标记（scan_ok/fail/hints），下次"

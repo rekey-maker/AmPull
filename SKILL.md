@@ -14,7 +14,7 @@ description: 调用本机 AmPull 多连接下载器执行文件下载。Use when
 - 主用：**与本文件（SKILL.md）同目录的 `ampull.py`**——用本文件被加载时的实际目录拼出脚本绝对路径。不要凭记忆硬编码历史路径：目录可能整体迁移过（此前就发生过从旧目录迁走、agent 按老路径调用报 can't open file）
 - 备用（哈希一致的同步副本）：`D:\test\dl\ampull.py`。主用不存在时按此顺序试；都找不到就全盘文件搜索 `ampull.py`（文件名唯一，命中即用）
 - 运行：`python <脚本路径> ...`（零第三方依赖）
-- **技能目录部署形态**：SKILL.md 与 `ampull.py` 成对放进任意 agent 技能目录（如 `~/.zcode/skills/ampull/`、`~/workbuddy 技能位`）即可被 `/ampull` 或下载意图自动触发——源目录 `Desktop/AmPull/` 是唯一事实源，改代码后跑 `python sync_skill.py` 同步全部部署位
+- **技能目录部署形态**：SKILL.md 与 `ampull.py` 成对放进任意 agent 技能目录（如 `~/.zcode/skills/ampull/`、`~/.trae-cn/skills/ampull/`、`~/.workbuddy/skills/ampull/`）即可被 `/ampull` 或下载意图自动触发——安装就是**把这两个文件拷进当前宿主的技能目录**（用户手动或让 agent 执行均可）；源目录 `Desktop/AmPull/` 是唯一事实源，更新后把新版两文件重新拷贝即可
 
 ## 动手前先读契约（红线）
 

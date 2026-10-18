@@ -664,7 +664,7 @@ def _probe_proxy(purl, timeout=4.0, target="www.baidu.com:443"):
     在这里握手失败被自然排除。r38：改为 socket 直发 CONNECT（更轻，不再真 GET
     favicon）；target 可换墙外域做翻墙能力验证；回环 RTT 毫秒级，timeout 1.5s
     足够判定。**CONNECT 目标必须 host:port 形态**——带路径（如 /favicon.ico）
-    会被梯子拒绝、真代理口被误分类为 socks（首跑实锤）。"""
+    会被代理拒绝、真代理口被误分类为 socks（首跑实锤）。"""
     try:
         parts = urllib.parse.urlsplit(
             purl if "://" in purl else "http://" + purl)
@@ -4202,7 +4202,7 @@ def main():
                          "注册表 > 直连）")
     ap.add_argument("--reset-proxy", action="store_true",
                     help="清除代理扫描当日标记（scan_ok/fail/hints），下次"
-                         "需要代理时强制重新扫描——换梯子端口/换客户端后用")
+                         "需要代理时强制重新扫描——换代理端口/换客户端后用")
     ap.add_argument("--no-proxy", action="store_true",
                     help="禁用一切代理（含环境变量与自动检测），强制直连")
     ap.add_argument("--header", action="append", metavar="K:V",
@@ -4288,7 +4288,7 @@ def main():
         print(json.dumps(build_schema(ap), ensure_ascii=True))
         return 0
 
-    # ---- r38 --reset-proxy：清代理扫描当日标记（换梯子端口/换客户端后用）----
+    # ---- r38 --reset-proxy：清代理扫描当日标记（换代理端口/换客户端后用）----
     if getattr(a, "reset_proxy", False):
         st = _state_load()
         for _k in ("scan_ok_date", "scan_fail_date", "scan_proxy",

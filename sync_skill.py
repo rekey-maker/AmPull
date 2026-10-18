@@ -7,6 +7,9 @@
   1. <桌面>/Skills/ampull/            （历史部署位）
   2. ~/.zcode/skills/ampull/          （ZCode 加载位）
   3. ~/.workbuddy/skills/ampull/      （WorkBuddy 加载位）
+  4. ~/.trae-cn/skills/ampull/        （Trae CN 加载位）
+  5. ~/.config/opencode/skills/ampull/（OpenCode 加载位）
+  （DSH 无标准 skills 目录，不走此分发）
 
 用法：python sync_skill.py          （同步 + 打印结果）
      python sync_skill.py --check  （仅校验漂移，任一副本漂移=exit 1）
@@ -22,6 +25,9 @@ DSTS = [
     os.path.join(os.path.dirname(ROOT), "Skills", "ampull"),
     os.path.join(os.path.expanduser("~"), ".zcode", "skills", "ampull"),
     os.path.join(os.path.expanduser("~"), ".workbuddy", "skills", "ampull"),
+    os.path.join(os.path.expanduser("~"), ".trae-cn", "skills", "ampull"),
+    os.path.join(os.path.expanduser("~"), ".config", "opencode", "skills",
+                 "ampull"),
 ]
 
 

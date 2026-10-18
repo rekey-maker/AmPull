@@ -4197,7 +4197,12 @@ def main():
                          "不给=全部文件，当心整仓几百 GB）")
     ap.add_argument("--proxy", metavar="URL",
                     help="强制走指定 HTTP 代理（如 http://127.0.0.1:7890）；"
-                         "默认自动检测（环境变量、系统代理注册表、本机端口扫描）")
+                         "默认自动检测（r38 多源候选依次尝试：扫描口[双跳探针"
+                         "验证翻墙能力，当日复用零重扫]> 环境变量 > 系统代理"
+                         "注册表 > 直连）")
+    ap.add_argument("--reset-proxy", action="store_true",
+                    help="清除代理扫描当日标记（scan_ok/fail/hints），下次"
+                         "需要代理时强制重新扫描——换梯子端口/换客户端后用")
     ap.add_argument("--no-proxy", action="store_true",
                     help="禁用一切代理（含环境变量与自动检测），强制直连")
     ap.add_argument("--header", action="append", metavar="K:V",
@@ -4282,6 +4287,15 @@ def main():
     if getattr(a, "schema", False):
         print(json.dumps(build_schema(ap), ensure_ascii=True))
         return 0
+
+    # ---- r38 --reset-proxy：清代理扫描当日标记（换梯子端口/换客户端后用）----
+    if getattr(a, "reset_proxy", False):
+        st = _state_load()
+        for _k in ("scan_ok_date", "scan_fail_date", "scan_proxy",
+                   "socks_hint", "http_hint"):
+            st.pop(_k, None)
+        _state_save(st)
+        print("  代理扫描当日标记已清——下次需要代理时将重新扫描")
 
     res = {"ok": False, "path": None, "bytes": 0, "seconds": 0.0,
            "sha256": None, "verified": None, "error": None, "warning": None}

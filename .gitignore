@@ -14,3 +14,4 @@ __pycache__/
 
 # 历史归档（设计文档/旧版备份/测试报告，不入公开仓库）
 AMPull-backup/
+ampull.state.json

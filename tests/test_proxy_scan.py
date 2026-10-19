@@ -19,7 +19,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-spec = importlib.util.spec_from_file_location("ampull", "AmPull.py")
+spec = importlib.util.spec_from_file_location(
+    "ampull", os.path.join(ROOT, "ampull.py"))
 ampull = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ampull)
 

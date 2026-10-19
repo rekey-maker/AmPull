@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile check
+        run: python -m py_compile ampull.py
+      - name: Proxy-scan simulation suite (zero network)
+        run: python tests/test_proxy_scan.py
+      - name: CLI smoke
+        shell: bash
+        run: |
+          python ampull.py --help > /dev/null
+          echo "smoke ok"

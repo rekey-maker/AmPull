@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Same gate as CI
+        run: |
+          python -m py_compile ampull.py
+          python tests/test_proxy_scan.py
+      - name: Generate SHA256SUMS (after all assets exist, before upload)
+        run: sha256sum ampull.py > SHA256SUMS.txt
+      - name: Create release with assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" ampull.py SHA256SUMS.txt \
+            --verify-tag --generate-notes \
+            --title "AmPull $GITHUB_REF_NAME"

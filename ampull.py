@@ -33,7 +33,8 @@
 · error 词表闭合（权威清单以 --schema 输出为准）：bad_args / bad_sha256 / bad_url /
   bad_path / usage / help / network / incomplete / size_mismatch / verify_failed /
   etag_mismatch / disk / io / internal / interrupted / cancelled / locked /
-  waste，及
+  waste，v5.20 新增 hls_*（HLS 子命令：parse/variant/key/drm/segment/seg_corrupt/
+  live/playlist_changed/dep_missing/mux）与 tools_*（依赖自举），及
   http_XXX（XXX=HTTP 状态码）。locked=另一实例正下载同一文件（双开保护，等它
   结束或重跑）。etag_mismatch=下载响应与探测的 ETag 不符（服务器中途换内容），
   重跑同一条命令即可按账本判废旧断点后全量重下。
@@ -101,8 +102,11 @@
   一行 JSON（ok/mode/path/port/url/size/complete/warning）且进程保持前台，
   Ctrl+C 退出码 130，退出时不再有第二行 JSON。warning=partial_content 表示下载
   进行中（重跑下载会重置 .part 内容，读到什么以当时账本为准）。
-  HLS/m3u8 不解析：agent 解析后每行一个 TS URL 写清单走 --manifest（AES-128
-  加密流不支持，让 agent 走 yt-dlp）。v5.16 起校验 Host 头（只认 loopback 与
+  v5.20 起支持 HLS：`ampull.py hls <m3u8> <目录>`——VOD + 明文 TS + AES-128，
+  分片级并行 + 断点续传 + 可选 mp4 封装；fMP4 / EXT-X-BYTERANGE / 多 KEY 轮换 /
+  DRM / 直播一律明确拒绝（不猜、不出错片）。缺 ffmpeg 时落 .ts，可用
+  `ampull.py tools install ffmpeg` 自举（只写本地 tools 目录，需用户同意）。
+  v5.16 起校验 Host 头（只认 loopback 与
   监听地址，DNS rebinding 防线），异己 Host 直接 403（附人话提示）；绑定
   0.0.0.0/:: 时跳过校验（局域网客户端 Host 是各自真实 IP，且外网绑定无
   rebinding 威胁，v5.17 文档补记）。管道/重定向输出字节恒 UTF-8（v5.17，
@@ -194,7 +198,7 @@ _rx_bytes = 0
 # 版本线=交付轮次（v4.7 起 UA 与设计文档版本号同线，schema 的 version 字段
 # 反射此处，勿单独改——历史上 UA 走 2.x、文档走 v4.x 两套叙事，agent 缓存的
 # 契约会跨版本对不上）
-UA = "ampull/5.19"   # v5.19：代理检测重做（分类扫描+当日标记+境外连通验证，awsearch r37++ 回移植）
+UA = "ampull/5.21"   # v5.21：MCP 层（ampull_mcp.py：hls/tools/status/异步 job）+ 共享 ffmpeg 通道 + quality 宽度兜底
 # error 词表（单一事实来源，--schema 输出它）。闭合=JSON 的 error 字段不会出现
 # 词表外的值（http_XXX 除外，XXX 是任意 HTTP 状态码）。cancelled=批量模式下其他
 # 分片已失败时被提前放弃的分片错误码——手写清单曾漏过它（docstring 漂移实测），
@@ -203,7 +207,14 @@ ERROR_CODES = ("bad_args", "bad_sha256", "bad_url", "bad_path", "usage", "help",
                "network", "incomplete", "size_mismatch", "verify_failed",
                "etag_mismatch",
                "disk", "io", "internal", "interrupted", "cancelled", "locked",
-               "waste")
+               "waste",
+               # ---- v5.20 HLS（m3u8）子命令 ----
+               "hls_parse_failed", "hls_variant_missing", "hls_key_failed",
+               "hls_drm", "hls_segment_failed", "hls_seg_corrupt",
+               "hls_live_unsupported", "hls_playlist_changed", "hls_dep_missing",
+               "hls_mux_failed",
+               # ---- v5.20 tools 依赖自举 ----
+               "tools_install_failed", "tools_not_found")
 # 这些 HTTP 状态是永久性失败，重试没有意义（403 尤其：对限流站点重试等于延长封禁）
 FATAL_HTTP = (400, 401, 403, 404, 405, 416, 451)
 # HEAD 被【方法层面】拒绝时才改用 GET 探测。405/501 是铁证；403 也收进来——
@@ -4018,6 +4029,43 @@ def do_serve(a, res, real_out):
         srv.server_close()
 
 
+def _build_commands(Parser):
+    """子命令参数表（v5.20）：反射自各子解析器，与主参数表同构。
+
+    手写子命令表必然漂移（主表的教训：docstring 曾漏掉已上线的 cancelled），
+    这里直接问解析器要 actions，单一事实来源。
+    """
+    out = {}
+    try:
+        from ampull_hls import cli as _sub_cli
+    except Exception:
+        return out
+    for _name in ("hls", "tools"):
+        try:
+            _p = _sub_cli.build_parser(_name, Parser)
+        except Exception:
+            continue
+        _items = []
+        for _x in _p._actions:
+            if _x.dest == argparse.SUPPRESS or _x.help == argparse.SUPPRESS:
+                continue
+            _items.append({
+                "name": _x.dest,
+                "flags": list(_x.option_strings),
+                "type": getattr(_x.type, "__name__", None) if callable(_x.type) else _x.type,
+                "nargs": _x.nargs,
+                "default": None if _x.default is argparse.SUPPRESS else _x.default,
+                "choices": list(_x.choices) if _x.choices else None,
+                "help": " ".join((_x.help or "").split()),
+            })
+        out[_name] = {
+            "prog": _p.prog,
+            "description": " ".join((_p.description or "").split()),
+            "arguments": _items,
+        }
+    return out
+
+
 def build_schema(ap):
     """--schema：从运行中的 argparse 导出机器可读契约（单一事实来源）。
 
@@ -4054,7 +4102,11 @@ def build_schema(ap):
             "error": "失败码，取值见 error_codes；null=成功",
             "error_msg": "仅失败时出现：错误原因人话一行（≤200 字符），兜底码"
                          "（internal 等）的排查线索",
-            "warning": "html_response | proxy_fallback | gh_branch_fallback | partial_content（--serve 启动 JSON）| 逗号连接的多个；null=无",
+            "warning": "html_response | proxy_fallback | gh_branch_fallback | "
+                       "partial_content（--serve 启动 JSON）| "
+                       "ffmpeg_missing | mux_skipped | playlist_refreshed | "
+                       "duration_mismatch | workers_clamped | resume_forced | "
+                       "quality_fallback（以上 7 个属 hls 子命令）| 逗号连接的多个；null=无",
             "files": "仅批量模式：每分片一个对象（同上字段+url 源链接；磁盘满跳过的分片不在其中）",
             "mirrors": "仅 --mirror 且有镜像入池时出现：多源池遥测 "
                        "[{host,url,bytes,fails,ewma}]，"
@@ -4077,7 +4129,19 @@ def build_schema(ap):
                       "多路径中任一路径非法（URL/目录）→ 整查 usage 失败（响亮暴露"
                       "调用方 bug，不做逐项降级）；八字段下载收据不适用，--status "
                       "参数报错时回退八字段外壳",
+            "hls": "仅 hls 子命令：{variant_url, quality, segments_total, "
+                   "segments_done, segments_failed, segments_skipped_resume, "
+                   "encrypted, key_count, muxed, container(mp4|ts), "
+                   "duration_playlist, duration_media, parts_dir, ffmpeg_source, "
+                   "install_command}；分片级明细不进收据（924 行逐片会刷爆管道），"
+                   "排障用 --keep-parts 后看 parts 目录",
+            "tools": "仅 tools 子命令：{mode:\"tools\", action(list|path|install|remove), "
+                     "tool, version, path, url, sha256, bytes, smoke_test, "
+                     "source(path|local|fresh), dry_run, plan, tools[]（list 动作："
+                     "{tool, supported_platforms, installed[], in_use, source, "
+                     "tools_root}）, removed[]/would_remove[]（remove 动作）}",
         },
+        "commands": _build_commands(Parser),
         "error_codes": list(ERROR_CODES),
         "error_dynamic": "http_XXX（XXX=HTTP 状态码，如 http_403）",
         "exit_codes": {"0": "成功", "1": "失败", "130": "用户中断"},
@@ -4128,8 +4192,14 @@ def build_schema(ap):
             "第二行 JSON；未完成区间挂起等待而非 404，可边下边用；下载停止推进"
             "超 300 秒连接会被服务端断开（重连即可续流）；Range 按 RFC 7233——"
             "非法/多区间/倒序回 200 全文件，416 只用于起点超界",
-            "HLS/m3u8 不解析：agent 解析后每行一个 TS URL 写清单走 --manifest"
-            "（AES-128 加密流不支持，走 yt-dlp）",
+            "HLS（v5.20）：`ampull.py hls <m3u8链接> <输出目录>`——VOD + 明文 TS + "
+            "AES-128，分片级并行 + 断点续传 + 可选 mp4 封装；fMP4 / EXT-X-BYTERANGE / "
+            "多 KEY 轮换 / DRM / 直播一律明确拒绝（不出错片）。缺 ffmpeg 时落 .ts 并打 "
+            "warning=ffmpeg_missing，可用 `ampull.py tools install ffmpeg --yes` 自举"
+            "（默认 dry-run，需用户同意；只写本地 tools 目录，不改 PATH）",
+            "子命令（hls/tools）必须写在第一个位置参数：`ampull.py hls \"<url>\" <目录> --json`；"
+            "子命令参数表见 schema.commands；它们不与主参数（--manifest/--repo/--serve/"
+            "--clean/--status）混用，混用会报 unrecognized arguments",
             "--mirror 多源池：候选并行探测（每候选单请求 20s 超时，通道失败切"
             "备用一次）后按双门筛选入池——"
             "大小与主源一致+支持 Range；ETag 与主源不一致时必须有 --sha256 兜底"
@@ -4152,6 +4222,71 @@ def build_schema(ap):
     }
 
 
+def _parse_sub(sub, json_mode):
+    """解析 hls / tools 子命令（独立 Parser；主 Parser 不参与）。
+
+    v5.20：因为主解析用 parse_intermixed_args()（与 subparsers 不兼容），
+    子命令走自己的解析器。返回的 namespace 需补齐主流程后面会无条件读取的
+    属性（urls/serve/clean/status/... 等），否则 AttributeError。
+    """
+    try:
+        from ampull_hls import cli as _sub_cli
+    except ImportError as _e:
+        # 单文件形态（只拷了 ampull.py）：给干净收据，不要 traceback + 零 JSON
+        _msg = "子命令需要 ampull_hls/ 子包与 ampull.py 同目录（当前缺失：%s）" % _e
+        print(_msg, file=sys.stderr)
+        if json_mode:
+            emit({"ok": False, "path": None, "bytes": 0, "seconds": 0.0,
+                  "sha256": None, "verified": None, "error": "bad_args",
+                  "error_msg": _msg, "warning": None}, sys.stdout)
+        raise SystemExit(1)
+    sap = _sub_cli.build_parser(sub, Parser, json_mode=json_mode)
+    # help 必须在 parse 之前拦：位置参数是必填项，argparse 会先报缺参再轮到 help
+    if any(x in ("-h", "--help") for x in sys.argv[1:]):
+        sap.print_help(sys.stderr)
+        if json_mode:
+            emit({"ok": False, "path": None, "bytes": 0, "seconds": 0.0,
+                  "sha256": None, "verified": None, "error": "help",
+                  "error_msg": "子命令帮助已打印到 stderr", "warning": None},
+                 sys.stdout)
+            raise SystemExit(1)
+        raise SystemExit(0)
+    try:
+        a = sap.parse_intermixed_args()
+    except SystemExit as e:
+        if e.code in (0, None):
+            raise
+        if json_mode:
+            emit({"ok": False, "path": None, "bytes": 0, "seconds": 0.0,
+                  "sha256": None, "verified": None, "error": "usage",
+                  "error_msg": getattr(sap, "_cli_err", None)
+                  or "参数解析失败：未知 flag 或非法值（详见 stderr）",
+                  "warning": None}, sys.stdout)
+            raise SystemExit(1)
+        raise
+    if getattr(a, "help", False):
+        # 与主命令同契约：JSON 模式下 help 走 stderr + 单行收据（error=help），
+        # 退出码 1；非 JSON 模式正常打印 help、退出码 0
+        sap.print_help(sys.stderr)
+        if json_mode:
+            emit({"ok": False, "path": None, "bytes": 0, "seconds": 0.0,
+                  "sha256": None, "verified": None, "error": "help",
+                  "error_msg": "子命令帮助已打印到 stderr", "warning": None},
+                 sys.stdout)
+            raise SystemExit(1)
+        raise SystemExit(0)
+    # 主流程后续（互斥校验链 / finally 记账）会无条件读这些属性
+    for _k, _v in (("urls", []), ("manifest", None), ("repo", None),
+                   ("serve", None), ("clean", None), ("status", None),
+                   ("mirror", None), ("as_name", None), ("include", None),
+                   ("yes", False), ("all", False), ("older_than", None),
+                   ("sha256", None), ("help", False), ("header", None),
+                   ("hf_token", None)):
+        if not hasattr(a, _k):
+            setattr(a, _k, _v)
+    return a
+
+
 def main():
     JSON_MODE = "--json" in sys.argv
 
@@ -4171,6 +4306,27 @@ def main():
                 _s.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+
+    # ---- v5.20 子命令分流（hls / tools）：必须在主 Parser 构建前剥掉 token。
+    #      不能用 add_subparsers：主解析走 parse_intermixed_args()，CPython 对
+    #      nargs=PARSER 直接 TypeError（Lib/argparse.py parse_known_intermixed_args）。
+    #      改成"前置剥离 + 独立子解析器"后，Fail 捕获 / emit / journal / 退出码
+    #      全部沿用主流程，子命令也不污染全局 --schema 的参数表。
+    _SUB = (sys.argv[1] if len(sys.argv) > 1
+            and sys.argv[1] in ("hls", "tools") else None)
+    if _SUB:
+        sys.argv.pop(1)
+    elif len(sys.argv) > 2 and sys.argv[1].startswith("-") \
+            and sys.argv[2] in ("hls", "tools"):
+        # 子命令写在了 --json 之类的 flag 后面：明确报错，不要静默退化成批量
+        # 下载（agent 会看到 files:[{url:"hls"},...] 这种莫名其妙的收据）
+        _m = "子命令必须写在第一个位置参数：ampull.py hls <m3u8链接> <输出目录>"
+        print(_m, file=sys.stderr)
+        if JSON_MODE:
+            emit({"ok": False, "path": None, "bytes": 0, "seconds": 0.0,
+                  "sha256": None, "verified": None, "error": "usage",
+                  "error_msg": _m, "warning": None}, sys.stdout)
+        return 1
 
     # ---- 会审 P2 allow_abbrev=False：argparse 默认认前缀缩写（--js → --json），
     # 但 JSON_MODE 是字面量扫描——缩写会全程无 JSON 输出，agent 解析必失败
@@ -4260,7 +4416,9 @@ def main():
     # ---- 评审 A 实锤：nargs="*" 被 flag 打断后，argparse 不再吞后续位置参数——
     #      "u1 u2 --header X 目录"（目录放最后的 Unix 惯例）会报 unrecognized。
     #      parse_intermixed_args 专为 * 与 flag 混排设计，URL/目录与 flag 可任意穿插 ----
-    if JSON_MODE:
+    if _SUB:
+        a = _parse_sub(_SUB, JSON_MODE)
+    elif JSON_MODE:
         # v5.7 复审 P1：argparse 自身错误（未知 flag/--conns abc）抛 SystemExit(2)，
         # 击穿 exit_codes={0,1,130} 契约且 stdout 零 JSON。转标准 usage 收据，
         # 退出码归 1；argparse 的错误说明已自带打到 stderr。--help 的 exit 0 放行。
@@ -4327,7 +4485,8 @@ def main():
             _clash.append("--include 需要 --repo（整仓通配过滤只服务仓库模式）")
         for fl, v in (("-y/--yes", a.yes), ("--all", a.all),
                       ("--older-than", a.older_than)):
-            if v and a.clean is None:
+            # v5.20：子命令（tools install/remove 的 --yes）不消费 --clean
+            if v and a.clean is None and not _SUB:
                 _clash.append(fl + " 需要 --clean（删除类 flag 只服务清理模式）")
         if _clash:
             raise Fail("usage", "；".join(_clash))
@@ -4352,7 +4511,25 @@ def main():
                                       ("--sha256", a.sha256)) if v]
             if clash:
                 raise Fail("usage", "--status 是只读查询，与 %s 互斥" % "、".join(clash))
-        if JSON_MODE and getattr(a, "help", False):
+        if _SUB:
+            # ---- v5.20：hls / tools 走各自实现；收据仍由本函数的 finally emit ----
+            try:
+                from ampull_hls import cli as _sub_cli
+            except ImportError as _e:
+                raise Fail("bad_args",
+                           "hls/tools 子命令需要 ampull_hls/ 与 ampull.py 同目录：%s"
+                           % _e)
+            code = _sub_cli.run(_SUB, a, res, {
+                "Fail": Fail,
+                "Parser": Parser,
+                "extra_headers": EXTRA_HEADERS,
+                "resolve_ops": _resolve_ops,
+                "user_agent": UA,
+                # 默认 opener 必须带 _SafeRedirect：跨 host 302 时剥离凭据
+                "default_opener": _DEFAULT_OPENER,
+                "json_mode": JSON_MODE,
+            })
+        elif JSON_MODE and getattr(a, "help", False):
             ap.print_help(sys.stderr)
             res["error"] = "help"
             code = 1

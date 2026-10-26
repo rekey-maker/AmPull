@@ -12,6 +12,15 @@ __pycache__/
 *.part.lock
 *.part.done.lock
 
+# 依赖自举产物（tools install 下载的 ffmpeg，约 200MB，不入库）
+tools/
+
+# MCP 异步任务的运行目录
+jobs/
+
+# MCP 未指定 out_dir 时的默认落盘目录
+downloads/
+
 # 历史归档（设计文档/旧版备份/测试报告，不入公开仓库）
 AMPull-backup/
 ampull.state.json

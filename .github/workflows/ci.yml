@@ -23,6 +23,8 @@ jobs:
         run: python -m py_compile ampull.py
       - name: Proxy-scan simulation suite (zero network)
         run: python tests/test_proxy_scan.py
+      - name: HLS suite (zero network)
+        run: python tests/test_hls.py
       - name: CLI smoke
         shell: bash
         run: |

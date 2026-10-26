@@ -1,6 +1,6 @@
 ---
 name: ampull
-description: 调用本机 AmPull 多连接下载器执行文件下载。Use when the user asks to 下载/下到/保存一个 URL 资源或文件，或提到下载器、镜像下载、HuggingFace/魔搭/TUNA 源、断点续传、安装包下载。Do not use for 网页浏览、页面抓取或内容分析。
+description: 调用本机 AmPull 多连接下载器执行文件下载。Use when the user asks to 下载/下到/保存一个 URL 资源或文件，或提到下载器、镜像下载、HuggingFace/魔搭/TUNA 源、断点续传、安装包下载；也用于 m3u8/HLS 视频流下载（含 ffmpeg 依赖的处理指引）。
 ---
 
 # AmPull 调用契约
@@ -71,6 +71,115 @@ python "<ampull.py 所在目录>/ampull.py" --schema
 - **loopback 直连**：127.0.0.1/localhost 自动绕过代理，本地桩测试可直接用
 - **重试内建**：网络抖动/5xx/429 退避重试已内建；agent 侧失败不要立刻原样重跑，先读 error_msg
 - **GitHub 404 分支回退**（v5.18）：`github.com/.../archive/...` 归档链接撞 404（默认分支不叫 main 之类的分支名问题）自动查仓库默认分支并试 master/main/develop + codeload 直链，命中即改用新 URL 继续下载（stderr 打印改用后的链接，收据 `warning=gh_branch_fallback`）——agent 无需为分支名再猜一轮；gh-proxy 等包装前缀保留。仅 404 触发，403/401 是鉴权问题不回退
+
+## AmPull MCP（v5.21，优先用它）客户端里能直接看到 13 个工具，**不用拼命令行**；MCP 与 CLI 同源（内部就是子进程跑
+CLI 取 `--json` 收据），参数语义完全一致。
+
+| 工具 | 干什么 | 关键提示 |
+|---|---|---|
+| `ampull_download` | 单/多 URL 下载 | `out_dir` **总按目录处理**（自动创建）；不给则落 `<程序目录>/downloads/`；文件名用 `as_name`；大文件 `wait=false`；`reset_proxy=true` 清代理当日标记 |
+| `ampull_manifest` | 清单批量（每行 `URL [sha256]`） | 适合几十上百个文件 |
+| `ampull_repo` | HuggingFace 整仓 | **不给 `include` 会整仓全下**（几百 GB），先限定 |
+| `ampull_hls` | HLS/m3u8 下载 | `quality` 数字按高度、不达标按宽度兜底；长任务 `wait=false` |
+| `ampull_hls_probe` | **只看不下载**：档位/段数/时长/加密/可下载性 | 下载前先探，选档不靠猜 |
+| `ampull_job` | 查异步任务状态与收据 | 不给 id 列全部（含历史目录）；`prune_days=N` 清 N 天前已结束的任务目录 |
+| `ampull_stop` | 停本进程发起的任务（含 serve） | 断点保留，重跑即续 |
+| `ampull_tools` | ffmpeg 自举：list/path/install/remove | 先复用已有；`install` 需 `yes=true`（默认 dry-run） |
+| `ampull_status` | 产物状态（只读） | 支持多路径 |
+| `ampull_clean` | 残留清理 | **默认只列不删**；`yes=true` 才删，`all=true` 连断点 |
+| `ampull_journal` | 台账最近 N 条（只读） | 认 `DL_JOURNAL`；排查"上次下到哪/报了什么错" |
+| `ampull_serve` | 回环 Range 服务（后台） | 返回 url，播放器可边下边用；`ampull_stop` 收 |
+| `ampull_schema` | 完整契约 | 与 CLI `--schema` 同一份（版本也从它取，不硬编码） |
+
+**已知限制（用之前知道更好）**：
+- MCP 服务**单线程串行**处理请求：同步等一个大下载时，同一连接上的后续调用会排队。
+  所以长任务一律 `wait=false`，让 `ampull_job` 能在下载进行中回话。
+- 客户端"取消调用"**不会**杀掉已起的子进程（JSON-RPC 没有取消语义）；要停用 `ampull_stop`。
+- 没有 MCP progress 通知（`notifications/progress` 未实现）：进度看 `ampull_status` 或 job 的 `out.log`。
+- `jobs/` 会随任务累积：定期 `ampull_job(prune_days=7)`。
+
+**长任务纪律**：几分钟以上的下载一律 `wait=false` → 拿 `job` → 用 `ampull_job` 查；
+不要用同步模式硬等（客户端工具调用有超时）。收据靠 `jobs/<id>/out.json` 落盘，
+MCP 重启后仍能查。
+
+**下载前先探**：HLS 用 `ampull_hls_probe(url, quality)`；它会回档位表、选中档、段数、
+时长、加密方式、`downloadable`。用户问"有没有 720"就靠它答（记得宽度/高度口径）。
+
+## HLS / m3u8 视频流（v5.20 起；以 `--schema` 是否含 `hls` 为准）
+
+没有 MCP 时用 CLI：
+
+**先用 `--schema` 确认本机版本有 `hls` 子命令**。没有就说明当前版本不支持 HLS，按下面「本机版本无 hls 时」降级，**不要自己拼 m3u8 分片清单去骗 `--manifest`**（AES-128 的段下回来是密文，白干）。
+
+```bash
+python <脚本> hls "<m3u8-url>" <输出目录> --quality best --workers 8 --json
+```
+
+- URL 可以是主列表（多档码率）或子列表；`--quality` 支持 `best|worst|1080|720|480`
+  - 数字按**高度**匹配（≥ 目标里最接近的档）；高度都不达标时**按宽度**再匹配一次
+    （站方常以宽度标"720"，例如 `RESOLUTION=720x406` 其实是 720 宽 / 406 高），
+    此时收据 `warning=quality_matched_by_width`；宽高都达不到才退最高档（`quality_fallback`）
+  - 所以用户问"有没有 720"时：先看收据 `hls.quality`（`720p`/`406p`）与 `variant_url`，
+    再如实说明"这档是 720 宽、406 高"，别直接说没有
+- 收据多一个 `hls` 子对象：`segments_total/done/failed`、`encrypted`、`key_count`、`muxed`、`duration_playlist`、`duration_media`
+- **进度靠推送**，与普通下载同规矩；进度帧形如 `seg 320/924 · 88.4 MB · 1.9 MB/s`
+
+### 收据 warning 怎么处理
+
+| warning / error | agent 动作 |
+|---|---|
+| `ffmpeg_missing` | 走下面「ffmpeg 依赖」流程（**必须先问用户**），装完重跑原命令；用户拒绝就接受 `.ts` 产物 |
+| `mux_skipped` | 成品是 `.ts`，数据没丢（半截 mp4 会自动清掉）；告知用户可直接用播放器打开，或修好 ffmpeg 后重跑封装 |
+| `playlist_refreshed` | 分片签名过期已自动重拉一次，无需动作 |
+| `duration_mismatch` | 收据里两个时长都给了，如实报给用户，别当成失败 |
+| `hls_drm` | **真 DRM（SAMPLE-AES/Widevine），不支持**；直接告知，不要重试、不要换工具绕 |
+| `hls_live_unsupported` | 直播流，一期不支持；如实说明 |
+
+### ffmpeg 依赖：先复用、没有才装，装前必须用户同意
+
+Windows **不自带** ffmpeg，它是第三方工具。缺了会走 `.ts` 降级，产物照样能播。
+**新机器/首次遇到 `ffmpeg_missing` 时的标准流程**：
+
+1. **先查**：`python <脚本> tools path ffmpeg --json`（七条通道，见下）。命中就直接重跑，
+   **不装**——多数机器上已经有了（winget/choco/scoop、共享位、别的程序自带）。
+2. 确实没有 → **问用户**：需要下载 ffmpeg（官方构建，约 **180~200MB**），是否允许？
+3. 用户同意 → `python <脚本> tools install ffmpeg --yes`
+   - 不带 `--yes` 只打印计划：下载源 / 体积 / sha256 / 落盘路径
+   - **自动安装到 `<程序目录>/tools/ffmpeg/<版本>/bin/ffmpeg.exe`**（相对程序、便携；
+     不写用户目录、不改 PATH、不写 System32；`tools/` 已进 .gitignore）
+   - 自动按平台选构建（Windows: BtbN win64-gpl zip / Linux: linux64-gpl tar.xz），
+     sha256 取自 GitHub Release 的 digest，装完跑 `-version` 烟测，失败自动回滚不留垃圾
+4. 装完重跑原 `hls` 命令（断点自动跳过已下分片——`ffmpeg_missing`/`mux_skipped` 时
+   断点目录**刻意保留**，所以重跑只做封装、不重下）
+5. 用户拒绝 → 接受 `.ts` 产物，别反复劝
+
+**macOS**：`tools install` 没有官方构建，会提示 `brew install ffmpeg`（装完在
+`/opt/homebrew/bin`，自动发现）；也可以用 `AMPULL_FFMPEG=/opt/homebrew/bin/ffmpeg` 显式指定。
+
+**禁止**：自己 `curl` 一个 ffmpeg.exe、手动改系统 PATH、往 System32 写文件、未经同意静默下载几十 MB。
+
+**先查再用**：`python <脚本> tools path ffmpeg --json` 会按七条通道找——
+`--ffmpeg` → `AMPULL_FFMPEG` → `AMPULL_FFMPEG_DIRS` → 程序目录 `tools/` →
+**共享安装位**（`C:\ffmpeg\bin`、`<盘>:\tools\ffmpeg\bin` 等）→ PATH →
+**别处自带的（有限扫描 + `-version` 烟测）**。
+也就是说：用户机器上如果已经装了（winget/choco/scoop/系统 PATH）、放在共享位、或者别的
+程序里带了一份，一般都能直接命中，**不必急着装**。收据 `source` 告诉你是哪条通道：
+`explicit|env|env_dir|local|shared|path|discovered`。
+
+`python <脚本> tools list --scan` 会列出扫到的候选（未探活），判断"能不能借"用这个。
+
+**多工具共用一份 ffmpeg 时不要复制**：`tools install` 现在**先复用后安装**——
+只要发现任何可用 ffmpeg 就直接返回 `source=reused`、`bytes=0`，不下载第二份；
+确实要装进程序目录才加 `--force`（会写 `tools/ffmpeg/<版本>/bin`，不碰用户目录、不改 PATH）。
+
+想手动指别处那份（比如 OBS/剪辑软件目录里的）：加环境变量
+`AMPULL_FFMPEG_DIRS=D:\SomeApp\bin`（多个用 `;` 分隔）或直接用 `--ffmpeg <路径>`。
+
+### 本机版本无 hls 时怎么办
+
+- 有 ffmpeg：让 ffmpeg 直拉 `ffmpeg -user_agent "Mozilla/5.0" -i "<m3u8>" -c copy -bsf:a aac_adtstoasc out.mp4`（单连接顺序拉，慢但能用）
+- 无 ffmpeg：如实告诉用户"当前 AmPull 版本不支持 HLS，本机也没有 ffmpeg"，给两条路（升级 AmPull / 装 ffmpeg），**不要假装能下**
+- 无论哪条，都别把 924 行逐片清单丢进 `--manifest` 当"支持 HLS"——那条路只对**明文 TS** 成立
 
 ## 失败处置
 

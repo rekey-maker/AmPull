@@ -6,7 +6,7 @@
 中断后重跑同一条命令即可续传；模型仓库的分片（GGUF 等）可一条命令批量拉取。
 为编码 agent（CLI 自动化）设计——JSON 收据、机器可读契约、状态单查，人也能直接用。
 
-> 当前版本 v5.19（UA `ampull/5.19`）。
+> 当前版本 v5.20（UA `ampull/5.20`）。
 
 ## 特性
 
@@ -25,7 +25,15 @@
 - **GitHub 404 分支回退**（v5.18）：归档链接 404 自动查默认分支并试 master/main/develop + codeload 直链，命中即改用新 URL（`gh-proxy` 等包装前缀保留）
 - **双开保护**：同名文件已在别处下载中时报锁冲突并附处置建议
 - **实时进度**：接收进度每 3 秒刷新（首块完成前也持续爬升）；真终端下另有 OSC 9;4 任务栏进度环；管道/重定向下自动切整行进度（5 秒一帧），`2> dl.log` 可实时 tail
+- **MCP 服务（v5.21）**：`ampull_mcp.py` —— stdio 零依赖，13 个工具覆盖 SKILL 全部能力面
+  （`download` / `manifest` / `repo` / `hls` / `hls_probe` / `job` / `stop` / `tools` /
+  `status` / `clean` / `journal` / `serve` / `schema`），与 CLI 同源（内部就是子进程跑
+  CLI 取收据）；长任务 `wait=false` → job_id → `ampull_job` 查
 - **零依赖**：仅 Python 标准库（3.8+），单文件即拷即用
+- **HLS 视频（v5.20，可选包）**：`ampull.py hls <m3u8链接> <输出目录>`——分片级并行 +
+  断点续传 + AES-128 解密 + 可选 mp4 封装（`-c copy`，秒级）；缺 ffmpeg 时落 `.ts`
+  并用 `tools install ffmpeg` 自助安装（默认 dry-run、只写本地 tools 目录、不改 PATH）。
+  需要与 `ampull_hls/` 子包同目录；**只有单文件时 hls 不可用，普通下载不受影响**
 
 ## 安装
 
@@ -53,6 +61,25 @@ python ampull.py --manifest 清单.txt "D:\模型"
 # HuggingFace 整仓（国内默认走 hf-mirror.com 直连）
 python ampull.py --repo unsloth/Qwen3.8-Flash-Next-GGUF --include "UD-IQ4_XS/*.gguf" "D:\模型"
 ```
+
+## HLS 视频下载（v5.20）
+
+```bash
+# 主列表/子列表都行；--quality 按高度选档（best/worst/406/720…）
+python ampull.py hls "https://example.com/v/index.m3u8" "D:\videos" --quality 720 --json
+
+# 只落 .ts（不调 ffmpeg）
+python ampull.py hls "<m3u8>" "D:\videos" --no-mux
+
+# 依赖自举：先看计划（源/大小/sha256/落盘路径），确认后加 --yes
+python ampull.py tools install ffmpeg
+python ampull.py tools install ffmpeg --yes
+python ampull.py tools path ffmpeg --json
+```
+
+范围与边界（一期）：VOD + 明文 TS + AES-128；**fMP4（`EXT-X-MAP`）/ `EXT-X-BYTERANGE` /
+多 KEY 轮换 / DRM / 直播一律明确拒绝**，不猜也不出错片。断点目录 `<名字>.parts/`：
+指纹（段数+时长+档位+容器）不符时整体归档为 `.parts.stale-<时间戳>` 并报错，不混拼。
 
 ## 下载中边下边用
 
@@ -131,7 +158,11 @@ python ampull.py --schema      # ~2k token 机器可读契约：全部参数 + J
 
 | 文件 | 说明 |
 |---|---|
-| `ampull.py` | 主程序（单文件，v5.18） |
+| `ampull.py` | 主程序（单文件，v5.21） |
+| `ampull_mcp.py` | MCP stdio 服务（5 工具：hls / job / tools / status / schema） |
+| `ampull_hls/` | HLS 子包（parse/plan/crypto/fetch/mux/cli/tools）——单文件形态下 hls 不可用，普通下载不受影响 |
 | `SKILL.md` | agent 调用契约（与本文件互补：这是给人看的，那是给 agent 看的） |
 | `downloads.jsonl` / `mirrors.jsonl` | 运行历史 / 镜像学习库（程序自动维护） |
+| `tools/` | `tools install` 下载的 ffmpeg（约 200MB，已 gitignore） |
+| `jobs/` | MCP 异步任务目录（`out.json` 收据 + `out.log`，已 gitignore） |
 

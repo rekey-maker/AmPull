@@ -15,9 +15,9 @@
 
 示例：
     python ampull.py "https://example.com/big.zip"
-    python ampull.py "https://example.com/big.zip" "D:\\下载\\big.zip" -c 32
+    python ampull.py "https://example.com/big.zip" "downloads/big.zip" -c 32
     python ampull.py "https://example.com/big.zip" --json --sha256 abcd1234...
-    python ampull.py --repo unsloth/Qwen3.8-Flash-Next-GGUF --include "UD-IQ4_XS/*.gguf" "D:\\模型\\UD-IQ4_XS"
+    python ampull.py --repo unsloth/Qwen3.8-Flash-Next-GGUF --include "UD-IQ4_XS/*.gguf" "models/UD-IQ4_XS"
     python ampull.py "https://github.com/OWNER/REPO/archive/refs/heads/main.zip"
     （v5.18：GitHub 归档 404 自动试默认分支/master/main/develop + codeload 直链，
      命中即改用新 URL 下载，warning=gh_branch_fallback；gh-proxy 等包装前缀保留）

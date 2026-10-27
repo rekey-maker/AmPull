@@ -24,3 +24,11 @@ downloads/
 # 历史归档（设计文档/旧版备份/测试报告，不入公开仓库）
 AMPull-backup/
 ampull.state.json
+
+# 非程序素材（2026-10-28 用户裁定：宣传/设计/调研材料不入库，文件留在本地）
+docs/
+pic/
+宣传页/
+AmPull-工坊主图-1x1.png
+ampull_main_check.png
+hfdownloader参考-引擎层三改进.md
